@@ -28,7 +28,9 @@ using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Cecil.PE;
 using Mono.Collections.Generic;
+#if __MonoCS__ || ENABLE_POSIX
 using Mono.Unix.Native;
+#endif
 using CustomAttributeNamedArgument = Mono.Cecil.CustomAttributeNamedArgument;
 using MethodBody = Mono.Cecil.Cil.MethodBody;
 using System.Threading;
@@ -751,12 +753,14 @@ namespace ILRepacking
             TargetAssemblyDefinition.Write(OutputFile, parameters);
             // If this is an executable and we are on linux/osx we should copy file permissions from
             // the primary assembly
+#if __MonoCS__ || ENABLE_POSIX
             if (Environment.OSVersion.Platform == PlatformID.MacOSX || Environment.OSVersion.Platform == PlatformID.Unix) {
                 Stat stat;
                 INFO("Copying permissions from " + PrimaryAssemblyFile);
                 Syscall.stat(PrimaryAssemblyFile, out stat);
                 Syscall.chmod(OutputFile, stat.st_mode);
             }
+#endif
             if (hadStrongName && !TargetAssemblyDefinition.Name.HasPublicKey)
                 StrongNameLost = true;
 
