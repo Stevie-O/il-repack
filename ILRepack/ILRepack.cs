@@ -139,7 +139,7 @@ namespace ILRepacking
 
         private readonly Hashtable allowedDuplicateTypes = new Hashtable();
         private readonly List<string> allowedDuplicateNameSpaces = new List<string>();
-        private List<Regex> excludeInternalizeMatches;
+        private InternalizeManager internalizeManager;
         private ReflectionHelper reflectionHelper;
         private static Regex TYPE_RE = new Regex("^(.*?), ([^>,]+), .*$");
 
@@ -585,9 +585,7 @@ namespace ILRepacking
             if (Internalize && !string.IsNullOrEmpty(ExcludeFile))
             {
                 string[] lines = File.ReadAllLines(ExcludeFile);
-                excludeInternalizeMatches = new List<Regex>(lines.Length);
-                foreach (string line in lines)
-                    excludeInternalizeMatches.Add(new Regex(line));
+                internalizeManager = new InternalizeManager(lines, this);
             }
         }
 
@@ -610,19 +608,78 @@ namespace ILRepacking
         }
 
         /// <summary>
-        /// Check if a type's FullName matches a Reges to exclude it from internalizing.
+        /// Check if a type's FullName matches a Regex to exclude it from internalizing.
         /// </summary>
-        private bool ShouldInternalize(string typeFullName)
+        private bool ShouldInternalize(TypeDefinition type, bool isPrimaryAssembly)
         {
-            if (excludeInternalizeMatches == null)
+            if (internalizeManager == null)
             {
-                return Internalize;
+                return Internalize && !isPrimaryAssembly;
             }
-            string withSquareBrackets = "[" + typeFullName + "]";
-            foreach (Regex r in excludeInternalizeMatches)
-                if (r.IsMatch(typeFullName) || r.IsMatch(withSquareBrackets))
-                    return false;
-            return true;
+            return internalizeManager.ShouldInternalize(type, !isPrimaryAssembly);
+        }
+
+        /// <summary>
+        /// Check if a member should be internalized
+        /// </summary>
+        private bool ShouldInternalize(IMemberDefinition member, InternalizeManager.MemberInternalizeManager mim)
+        {
+            if (mim == null) return false;
+            return mim.ShouldInternalize(member);
+        }
+
+        /// <summary>
+        /// Convert a field from public to internal
+        /// </summary>
+        /// <param name="field"></param>
+        private void InternalizeMember(FieldDefinition field)
+        {
+            if (field.IsPublic)
+            {
+                VERBOSE("Internalizing field: {0}::{1}", field.DeclaringType.FullName, field.Name);
+                field.IsAssembly = true;
+            }
+        }
+
+        /// <summary>
+        /// Convert a method from public to internal
+        /// </summary>
+        /// <param name="field"></param>
+        private void InternalizeMember(MethodDefinition meth)
+        {
+            if (meth.IsPublic)
+            {
+                VERBOSE("Internalizing method: {0}::{1}", meth.DeclaringType.FullName, meth.FullName);
+                meth.IsAssembly = true;
+            }
+        }
+
+        /// <summary>
+        /// Convert a property from public to internal
+        /// </summary>
+        /// <param name="field"></param>
+        private void InternalizeMember(PropertyDefinition prop)
+        {
+            if (prop.GetMethod != null && prop.GetMethod.IsPublic) InternalizeMember(prop.GetMethod);
+            if (prop.SetMethod != null && prop.GetMethod.IsPublic) InternalizeMember(prop.SetMethod);
+        }
+
+        /// <summary>
+        /// Convert an event from public to internal
+        /// </summary>
+        /// <param name="field"></param>
+        private void InternalizeMember(EventDefinition evt)
+        {
+            if (evt.AddMethod != null && evt.AddMethod.IsPublic) InternalizeMember(evt.AddMethod);
+            if (evt.RemoveMethod != null && evt.RemoveMethod.IsPublic) InternalizeMember(evt.RemoveMethod);
+            if (evt.InvokeMethod != null && evt.InvokeMethod.IsPublic) InternalizeMember(evt.InvokeMethod);
+            if (evt.HasOtherMethods)
+            {
+                foreach (MethodDefinition meth in evt.OtherMethods)
+                {
+                    if (meth.IsPublic) InternalizeMember(meth);
+                }
+            }
         }
 
         /// <summary>
@@ -639,6 +696,8 @@ namespace ILRepacking
                 ReadInputAssembliesParallel();
             else
                 ReadInputAssemblies();
+            if (internalizeManager != null)
+                internalizeManager.AddAssemblies(MergedAssemblies);
             globalAssemblyResolver.RegisterAssemblies(MergedAssemblies);
             var asmNames = KeepOtherVersionReferences ? 
               MergedAssemblies.Select(x => x.FullName) : 
@@ -909,14 +968,14 @@ namespace ILRepacking
             foreach (var r in PrimaryAssemblyDefinition.Modules.SelectMany(x => x.Types))
             {
                 VERBOSE("- Importing " + r);
-                Import(r, TargetAssemblyMainModule.Types, false);
+                Import(r, TargetAssemblyMainModule.Types, ShouldInternalize(r, true));
             }
             foreach (var m in OtherAssemblies.SelectMany(x => x.Modules))
             {
                 foreach (var r in m.Types)
                 {
                     VERBOSE("- Importing " + r);
-                    Import(r, TargetAssemblyMainModule.Types, ShouldInternalize(r.FullName));
+                    Import(r, TargetAssemblyMainModule.Types, ShouldInternalize(r, false));
                 }
             }
         }
@@ -940,7 +999,7 @@ namespace ILRepacking
             {
                 foreach (var r in m.ExportedTypes)
                 {
-                    if (!ShouldInternalize(r.FullName))
+                    if (!ShouldInternalize(r.Resolve(), false))
                     {
                         VERBOSE("- Importing Exported Type " + r);
                         Import(r, TargetAssemblyMainModule.ExportedTypes, TargetAssemblyMainModule);
@@ -1275,7 +1334,7 @@ namespace ILRepacking
         /// <summary>
         /// Clones a field to a newly created type
         /// </summary>
-        private void CloneTo(FieldDefinition field, TypeDefinition nt)
+        private void CloneTo(FieldDefinition field, TypeDefinition nt, bool internalize)
         {
             if (nt.Fields.Any(x => x.Name == field.Name))
             {
@@ -1283,6 +1342,7 @@ namespace ILRepacking
                 return;
             }
             FieldDefinition nf = new FieldDefinition(field.Name, field.Attributes, Import(field.FieldType, nt));
+            if (internalize) InternalizeMember(field);
             nt.Fields.Add(nf);
 
             if (field.HasConstant)
@@ -1400,7 +1460,7 @@ namespace ILRepacking
             Copy(input, output, (gp, ngp) => CopyCustomAttributes(gp.CustomAttributes, ngp.CustomAttributes, nt));
         }
 
-        private void CloneTo(EventDefinition evt, TypeDefinition nt, Collection<EventDefinition> col)
+        private void CloneTo(EventDefinition evt, TypeDefinition nt, bool internalize, Collection<EventDefinition> col)
         {
             // ignore duplicate event
             if (nt.Events.Any(x => x.Name == evt.Name))
@@ -1426,6 +1486,7 @@ namespace ILRepacking
                         ed.OtherMethods.Add(nm);
                 }
             }
+            if (internalize) InternalizeMember(ed);
 
             CopyCustomAttributes(evt.CustomAttributes, ed.CustomAttributes, nt);
         }
@@ -1556,7 +1617,7 @@ namespace ILRepacking
 
         }
 
-        private void CloneTo(PropertyDefinition prop, TypeDefinition nt, Collection<PropertyDefinition> col)
+        private void CloneTo(PropertyDefinition prop, TypeDefinition nt, bool internalize, Collection<PropertyDefinition> col)
         {
             // ignore duplicate property
             var others = nt.Properties.Where(x => x.Name == prop.Name).ToList();
@@ -1593,6 +1654,7 @@ namespace ILRepacking
                 pd.SetMethod = FindMethodInNewType(nt, prop.SetMethod);
             if (prop.GetMethod != null)
                 pd.GetMethod = FindMethodInNewType(nt, prop.GetMethod);
+            if (internalize) InternalizeMember(pd);
             if (prop.HasOtherMethods)
             {
                 foreach (MethodDefinition meth in prop.OtherMethods)
@@ -1623,7 +1685,7 @@ namespace ILRepacking
             return parameters != null && parameters.Count > 0;
         }
 
-        private void CloneTo(MethodDefinition meth, TypeDefinition type, bool typeJustCreated)
+        private void CloneTo(MethodDefinition meth, TypeDefinition type, bool internalize, bool typeJustCreated)
         {
             // ignore duplicate method for merged duplicated types
             if (!typeJustCreated && 
@@ -1641,6 +1703,8 @@ namespace ILRepacking
             nm.ImplAttributes = meth.ImplAttributes;
 
             type.Methods.Add(nm);
+
+            if (internalize) InternalizeMember(nm);
 
             CopyGenericParameters(meth.GenericParameters, nm.GenericParameters, nm);
 
@@ -1850,6 +1914,9 @@ namespace ILRepacking
 
         internal TypeDefinition Import(TypeDefinition type, Collection<TypeDefinition> col, bool internalize)
         {
+            if (!internalize && internalizeManager != null)
+                internalizeManager.AddPublicType(type);
+
             TypeDefinition nt = TargetAssemblyMainModule.GetType(type.FullName);
             bool justCreatedType = false;
             if (nt == null)
@@ -1880,20 +1947,27 @@ namespace ILRepacking
             }
             mappingHandler.StoreRemappedType(type, nt);
 
+
+            InternalizeManager.MemberInternalizeManager mim = null;
+            if (!internalize && internalizeManager != null)
+                mim = internalizeManager.GetMemberManagerForType(type);
+
             // nested types first (are never internalized)
             foreach (TypeDefinition nested in type.NestedTypes)
                 Import(nested, nt.NestedTypes, false);
+
             foreach (FieldDefinition field in type.Fields)
-                CloneTo(field, nt);
+                CloneTo(field, nt, ShouldInternalize(field, mim));
 
             // methods before fields / events
             foreach (MethodDefinition meth in type.Methods)
-                CloneTo(meth, nt, justCreatedType);
+                CloneTo(meth, nt, ShouldInternalize(meth, mim), justCreatedType);
 
             foreach (EventDefinition evt in type.Events)
-                CloneTo(evt, nt, nt.Events);
+                CloneTo(evt, nt, ShouldInternalize(evt, mim), nt.Events);
+
             foreach (PropertyDefinition prop in type.Properties)
-                CloneTo(prop, nt, nt.Properties);
+                CloneTo(prop, nt, ShouldInternalize(prop, mim), nt.Properties);
             return nt;
         }
 
@@ -1905,6 +1979,8 @@ namespace ILRepacking
             // only top-level types are internalized
             if (internalize && (nt.DeclaringType == null) && nt.IsPublic)
                 nt.IsPublic = false;
+            else
+                VERBOSE("- Not internalizing: {0}", type.FullName);
 
             CopyGenericParameters(type.GenericParameters, nt.GenericParameters, nt);
             if (type.BaseType != null)
