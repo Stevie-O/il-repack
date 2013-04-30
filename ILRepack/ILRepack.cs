@@ -353,6 +353,8 @@ namespace ILRepacking
 
             // private cmdline-options:
             LogVerbose = cmd.Modifier("verbose");
+            if (LogVerbose) Log = true;
+
             LineIndexation = cmd.Modifier("index");
 
             if (string.IsNullOrEmpty(KeyFile) && DelaySign)
