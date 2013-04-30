@@ -213,6 +213,14 @@ namespace ILRepacking
             }
         }
 
+        internal void VERBOSE(string format, params object[] args)
+        {
+            if (LogVerbose)
+            {
+                LogOutput("INFO: " + string.Format(format, args));
+            }
+        }
+        
         internal void IGNOREDUP(string ignoredType, object ignoredObject)
         {
             // TODO: put on a list and log a summary
