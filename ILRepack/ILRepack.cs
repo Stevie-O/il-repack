@@ -961,10 +961,33 @@ namespace ILRepacking
             CopySecurityDeclarations(PrimaryAssemblyDefinition.SecurityDeclarations, TargetAssemblyDefinition.SecurityDeclarations, null);
         }
 
+        private void FindPublicTypes()
+        {
+            if (!Internalize || internalizeManager == null) return; // don't bother unless internalizing
+
+            foreach (var r in PrimaryAssemblyDefinition.Modules.SelectMany(x => x.Types))
+            {
+                if (r.IsPublic && !ShouldInternalize(r, true))
+                    internalizeManager.AddPublicType(r);
+            }
+            foreach (var m in OtherAssemblies.SelectMany(x => x.Modules))
+            {
+                foreach (var r in m.Types)
+                {
+                    if (r.IsPublic && !ShouldInternalize(r, false))
+                        internalizeManager.AddPublicType(r);
+                }
+            }
+        }
+
         private void RepackTypes()
         {
             INFO("Processing types");
             // merge types, this differs between 'primary' and 'other' assemblies regarding internalizing
+
+            // First off, find all types that are going to be publicly exported
+            FindPublicTypes();
+
             foreach (var r in PrimaryAssemblyDefinition.Modules.SelectMany(x => x.Types))
             {
                 VERBOSE("- Importing " + r);
@@ -1754,7 +1777,7 @@ namespace ILRepacking
             nb.LocalVarToken = body.LocalVarToken;
 
             foreach (VariableDefinition var in body.Variables)
-                nb.Variables.Add(new VariableDefinition(var.Name, 
+                nb.Variables.Add(new VariableDefinition(var.Name,
                     Import(var.VariableType, parent)));
 
             nb.Instructions.SetCapacity(body.Instructions.Count);
@@ -1914,9 +1937,6 @@ namespace ILRepacking
 
         internal TypeDefinition Import(TypeDefinition type, Collection<TypeDefinition> col, bool internalize)
         {
-            if (!internalize && internalizeManager != null)
-                internalizeManager.AddPublicType(type);
-
             TypeDefinition nt = TargetAssemblyMainModule.GetType(type.FullName);
             bool justCreatedType = false;
             if (nt == null)
