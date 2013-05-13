@@ -218,7 +218,17 @@ namespace ILRepacking
                 owner.WARN(string.Format("Unable to resolve type: {0}", tr.FullName));
                 return;
             }
-            AddPublicType(tr.Resolve());
+            AddPublicType(td);
+            // e.g. if we have Nullable<Bar>, mark Bar as public
+            if (tr is GenericInstanceType)
+            {
+                GenericInstanceType git = (GenericInstanceType)tr;
+                foreach (TypeReference tr_arg in git.GenericArguments)
+                {
+                    AddPublicType(tr_arg);
+
+                }
+            }
         }
 
         public void AddPublicType(TypeDefinition td)
