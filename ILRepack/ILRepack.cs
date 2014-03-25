@@ -612,11 +612,23 @@ namespace ILRepacking
         /// </summary>
         private bool ShouldInternalize(TypeDefinition type, bool isPrimaryAssembly)
         {
+            InternalizeExceptionReason dummy;
+            return ShouldInternalize(type, isPrimaryAssembly, out dummy, false);
+        }
+
+        private bool ShouldInternalize(TypeDefinition type, bool isPrimaryAssembly, out InternalizeExceptionReason reason)
+        {
+            return ShouldInternalize(type, isPrimaryAssembly, out reason, true);
+        }
+
+        private bool ShouldInternalize(TypeDefinition type, bool isPrimaryAssembly, out InternalizeExceptionReason reason, bool reasonRequested)
+        {
             if (internalizeManager == null)
             {
+                reason = (isPrimaryAssembly) ? InternalizeExceptionReason.PrimaryAssembly : InternalizeExceptionReason.InternalizeDisabled;
                 return Internalize && !isPrimaryAssembly;
             }
-            return internalizeManager.ShouldInternalize(type, !isPrimaryAssembly);
+            return internalizeManager.ShouldInternalize(type, !isPrimaryAssembly, out reason, reasonRequested);
         }
 
         /// <summary>
@@ -965,17 +977,19 @@ namespace ILRepacking
         {
             if (!Internalize || internalizeManager == null) return; // don't bother unless internalizing
 
+            InternalizeExceptionReason exceptionReason;
+
             foreach (var r in PrimaryAssemblyDefinition.Modules.SelectMany(x => x.Types))
             {
-                if (r.IsPublic && !ShouldInternalize(r, true))
-                    internalizeManager.AddPublicType(r);
+                if (r.IsPublic && !ShouldInternalize(r, true, out exceptionReason))
+                    internalizeManager.AddPublicType(r, exceptionReason);
             }
             foreach (var m in OtherAssemblies.SelectMany(x => x.Modules))
             {
                 foreach (var r in m.Types)
                 {
-                    if (r.IsPublic && !ShouldInternalize(r, false))
-                        internalizeManager.AddPublicType(r);
+                    if (r.IsPublic && !ShouldInternalize(r, false, out exceptionReason))
+                        internalizeManager.AddPublicType(r, exceptionReason);
                 }
             }
         }
@@ -1999,8 +2013,8 @@ namespace ILRepacking
             // only top-level types are internalized
             if (internalize && (nt.DeclaringType == null) && nt.IsPublic)
                 nt.IsPublic = false;
-            else
-                VERBOSE("- Not internalizing: {0}", type.FullName);
+            else if ((nt.DeclaringType == null) && nt.IsPublic)
+                VERBOSE("- Not internalizing: {0}", nt.FullName); // don't say 'not internalizing' if the resulting type is not actually going to be public
 
             CopyGenericParameters(type.GenericParameters, nt.GenericParameters, nt);
             if (type.BaseType != null)

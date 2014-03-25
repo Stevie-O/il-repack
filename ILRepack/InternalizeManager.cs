@@ -145,8 +145,10 @@ namespace ILRepacking
         /// <param name="td">Definition to consider internalizing</param>
         /// <param name="defaultOption">What to return if no rule exists either way</param>
         /// <returns>True if the type should be internalized; false otherwise.</returns>
-        public bool ShouldInternalize(TypeDefinition td, bool defaultOption)
+        public bool ShouldInternalize(TypeDefinition td, bool defaultOption, out InternalizeExceptionReason reason, bool reasonRequested)
         {
+            reason = null;
+
             // do not internalize types exposed by non-internalized types
             if (publicTypes.Contains(td))
             {
@@ -163,10 +165,13 @@ namespace ILRepacking
                         r.TypeNameRegex.IsMatch(nameWithModule)
                         )
                     {
+                        if (!r.ForceInternal && reasonRequested)
+                            reason = InternalizeExceptionReason.InternalizeRule(r);
                         return r.ForceInternal;
                     }
                 }
             }
+            if (!defaultOption) reason = InternalizeExceptionReason.PrimaryAssembly;
             return defaultOption;
         }
 
@@ -207,7 +212,7 @@ namespace ILRepacking
             return publicTypes.Contains(td);
         }
 
-        public void AddPublicType(TypeReference tr)
+        public void AddPublicType(TypeReference tr, InternalizeExceptionReason reason)
         {
             // the T in class Foo<T> is some sort of mock type
             if (tr.IsGenericParameter && !tr.IsGenericInstance) return;
@@ -218,27 +223,27 @@ namespace ILRepacking
                 owner.WARN(string.Format("Unable to resolve type: {0}", tr.FullName));
                 return;
             }
-            AddPublicType(td);
+            AddPublicType(td, reason);
             // e.g. if we have Nullable<Bar>, mark Bar as public
             if (tr is GenericInstanceType)
             {
                 GenericInstanceType git = (GenericInstanceType)tr;
                 foreach (TypeReference tr_arg in git.GenericArguments)
                 {
-                    AddPublicType(tr_arg);
+                    AddPublicType(tr_arg, reason);
 
                 }
             }
         }
 
-        public void AddPublicType(TypeDefinition td)
+        public void AddPublicType(TypeDefinition td, InternalizeExceptionReason reason)
         {
             if (!td.IsPublic) return; // oh, wait, nevermind.
 
             // HashSet.Add returns false if the item's already in there
             if (!publicTypes.Add(td)) return;
             if (td.BaseType != null)
-                AddPublicType(td.BaseType);
+                AddPublicType(td.BaseType, InternalizeExceptionReason.BaseClass(td));
 
             // Okay, if this type is publicly visible, then a whole bunch more things need to be public in order for things to work smoothly
             // First, if there are any generic type arguments, they must be publicly visible, too.
@@ -248,10 +253,10 @@ namespace ILRepacking
             {
                 foreach (GenericParameter gp in td.GenericParameters)
                 {
-                    AddPublicType(gp);
+                    AddPublicType(gp, reason);
                     foreach (TypeReference constr in gp.Constraints)
                     {
-                        AddPublicType(constr);
+                        AddPublicType(constr, reason);
                     }
                 }
             }
@@ -261,7 +266,7 @@ namespace ILRepacking
             // this ensures that e.g. a public method that returns Dictionary<MyType> will bring MyType in
             // even through the generic Dictionary<T> is 
             if (!assemblies.Contains(td.Module.Assembly)) return;
-            owner.VERBOSE("- Preventing internalization of {0}", td.FullName);
+            owner.VERBOSE("- Preventing internalization of {0} {1}", td.FullName, ((object)reason) ?? "(no reason given)");
 
             MemberInternalizeManager mim = GetMemberManagerForType(td);
             // First, all public fields, events, and properties must have their types be public.
@@ -271,7 +276,7 @@ namespace ILRepacking
                 {
                     if (!fd.IsPublic) continue;
                     if (mim != null && mim.ShouldInternalize(fd)) continue;
-                    AddPublicType(fd.FieldType);
+                    AddPublicType(fd.FieldType, InternalizeExceptionReason.FieldType(fd));
                 }
             }
             if (td.HasEvents)
@@ -281,7 +286,7 @@ namespace ILRepacking
                     // Hello, Wilburrrrrr!
                     if (!(ed.AddMethod.IsPublic || ed.RemoveMethod.IsPublic)) continue;
                     if (mim != null && mim.ShouldInternalize(ed)) continue;
-                    AddPublicType(ed.EventType);
+                    AddPublicType(ed.EventType, InternalizeExceptionReason.EventType(ed));
                 }
             }
             if (td.HasProperties)
@@ -292,7 +297,7 @@ namespace ILRepacking
                             (pd.GetMethod != null && pd.GetMethod.IsPublic) || (pd.SetMethod != null && pd.SetMethod.IsPublic)
                         )) continue;
                     if (mim != null && mim.ShouldInternalize(pd)) continue;
-                    AddPublicType(pd.PropertyType);
+                    AddPublicType(pd.PropertyType, InternalizeExceptionReason.PropertyType(pd));
                 }
             }
             // For each method that's remaining public, the return type and the types of all parameters must be public.
@@ -302,12 +307,12 @@ namespace ILRepacking
                 {
                     if (!md.IsPublic) continue;
                     if (mim != null && mim.ShouldInternalize(md)) continue;
-                    AddPublicType(md.ReturnType);
+                    AddPublicType(md.ReturnType, InternalizeExceptionReason.MethodReturnValue(md));
                     if (md.HasParameters)
                     {
                         foreach (ParameterDefinition parmd in md.Parameters)
                         {
-                            AddPublicType(parmd.ParameterType);
+                            AddPublicType(parmd.ParameterType, InternalizeExceptionReason.MethodParameter(md, parmd));
                         }
                     }
                 }

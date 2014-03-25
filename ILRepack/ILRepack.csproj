@@ -73,6 +73,7 @@
     <Compile Include="DocumentationMerger.cs" />
     <Compile Include="IKVMLineIndexer.cs" />
     <Compile Include="InternalizeManager.cs" />
+    <Compile Include="InternalizeExceptionReason.cs" />
     <Compile Include="LineNumberWriter.cs" />
     <Compile Include="MappingHandler.cs" />
     <Compile Include="ILRepack.cs" />
